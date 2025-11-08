@@ -73,17 +73,22 @@
         const row = document.createElement('div'); row.className = 'farmer-row';
         const left = document.createElement('div'); left.textContent = `Farmer #${f.id} — ${f.assignedPlot!==null? 'Plot ' + (f.assignedPlot+1) : 'Unassigned'}`;
         const right = document.createElement('div');
+        // auto-replant selector
+        const sel = document.createElement('select'); sel.title = 'Auto-replant'; const offOpt = document.createElement('option'); offOpt.value = ''; offOpt.textContent = 'Auto: Off'; sel.appendChild(offOpt);
+        Object.keys(PLANTS).forEach(pid=>{ const opt = document.createElement('option'); opt.value = pid; opt.textContent = `${PLANTS[pid].name}${PLANTS[pid].seedCost? ' — ' + fmt(PLANTS[pid].seedCost) : ''}`; sel.appendChild(opt); });
+        sel.value = f.autoReplant || '';
+        sel.addEventListener('change', ()=>{ f.autoReplant = sel.value || null; saveJSON(FARMERS_KEY, farmers); renderFarmersList(); });
         const assignBtn = document.createElement('button'); assignBtn.textContent = f.assignedPlot===null ? 'Assign' : 'Reassign'; assignBtn.addEventListener('click', ()=>{ // start assign mode
           assigningFarmerId = f.id; if(plotsContainer) plotsContainer.classList.add('assigning');
         });
         const unassignBtn = document.createElement('button'); unassignBtn.textContent = 'Unassign'; unassignBtn.style.marginLeft='6px'; unassignBtn.addEventListener('click', ()=>{ const ff = farmers.find(x=>x.id===f.id); if(ff){ ff.assignedPlot = null; saveJSON(FARMERS_KEY,farmers); renderFarmersList(); renderPlots(); } });
         const fireBtn = document.createElement('button'); fireBtn.textContent='Fire'; fireBtn.style.marginLeft='6px'; fireBtn.addEventListener('click', ()=>{ if(!confirm('Fire this farmer?')) return; farmers = farmers.filter(x=>x.id!==f.id); saveJSON(FARMERS_KEY,farmers); renderFarmersList(); renderPlots(); });
-        right.appendChild(assignBtn); right.appendChild(unassignBtn); right.appendChild(fireBtn);
+        right.appendChild(sel); right.appendChild(assignBtn); right.appendChild(unassignBtn); right.appendChild(fireBtn);
         row.appendChild(left); row.appendChild(right); list.appendChild(row);
       });
     }
     // hire button
-    const hireWrap = document.createElement('div'); hireWrap.style.marginTop='10px'; const hireBtn = document.createElement('button'); hireBtn.textContent = `Hire Farmer — ${fmt(FARMER_COST)}`; hireBtn.disabled = money < FARMER_COST; hireBtn.addEventListener('click', ()=>{ if(money < FARMER_COST) return; if(!confirm(`Hire farmer for ${fmt(FARMER_COST)}?`)) return; money -= FARMER_COST; const newFarmer = { id: Date.now(), assignedPlot: null }; farmers.push(newFarmer); saveNumber(MONEY_KEY, money); saveJSON(FARMERS_KEY, farmers); updateMoney(); renderFarmersList(); }); hireWrap.appendChild(hireBtn); list.appendChild(hireWrap);
+    const hireWrap = document.createElement('div'); hireWrap.style.marginTop='10px'; const hireBtn = document.createElement('button'); hireBtn.textContent = `Hire Farmer — ${fmt(FARMER_COST)}`; hireBtn.disabled = money < FARMER_COST; hireBtn.addEventListener('click', ()=>{ if(money < FARMER_COST) return; if(!confirm(`Hire farmer for ${fmt(FARMER_COST)}?`)) return; money -= FARMER_COST; const newFarmer = { id: Date.now(), assignedPlot: null, autoReplant: null }; farmers.push(newFarmer); saveNumber(MONEY_KEY, money); saveJSON(FARMERS_KEY, farmers); updateMoney(); renderFarmersList(); }); hireWrap.appendChild(hireBtn); list.appendChild(hireWrap);
   }
 
   function openFarmersPanel(){ const panel = $('farmers-panel'); if(panel) { panel.hidden = false; renderFarmersList(); } }
@@ -218,7 +223,8 @@
           const idx = f.assignedPlot;
           if(typeof idx === 'number' && !isNaN(idx) && plots[idx]){
             const plant = PLANTS[plots[idx].plantId];
-            if(plant){ const elapsed = Math.floor((Date.now()-plots[idx].plantedAt)/1000); if(elapsed >= plant.grow){ harvest(idx); } }
+      if(plant){ const elapsed = Math.floor((Date.now()-plots[idx].plantedAt)/1000); if(elapsed >= plant.grow){ harvest(idx); // attempt auto-replant if configured for this farmer
+        try{ if(f.autoReplant){ plantCrop(f.autoReplant, idx); } }catch(e){ /* ignore */ } } }
           }
         });
       }
