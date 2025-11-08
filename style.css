@@ -1,0 +1,19 @@
+/* Simple styles for the clicker game */
+:root{
+	--bg:#0f1724;
+	--card:#0b1220;
+	--accent:#10b981; /* green */
+	--muted:#94a3b8;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:linear-gradient(180deg,var(--bg),#071024);color:#e6eef8}
+.container{max-width:420px;margin:5vh auto;padding:28px;border-radius:12px;background:rgba(255,255,255,0.03);text-align:center;box-shadow:0 6px 24px rgba(2,6,23,0.6)}
+h1{margin:0 0 18px;font-size:1.4rem}
+.money-display{font-size:2.4rem;margin:8px 0 18px;font-weight:700;color:var(--accent)}
+#earn-btn{background:linear-gradient(180deg,#34d399,#10b981);border:none;color:#04201a;padding:14px 22px;border-radius:10px;font-size:1rem;cursor:pointer;transition:transform .12s ease,box-shadow .12s ease}
+#earn-btn:active{transform:scale(.98)}
+.pop{transform:scale(1.06);box-shadow:0 8px 30px rgba(16,185,129,0.24)}
+.reset{margin-top:14px;background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted);padding:8px 12px;border-radius:8px;cursor:pointer}
+.hint{margin-top:16px;color:var(--muted);font-size:.9rem}
+@media (max-width:420px){.container{margin:3vh 12px;padding:18px}}
+
