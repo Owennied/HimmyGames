@@ -1,22 +1,31 @@
 (() => {
-  // Tiny Farm — multi-plot support with buyable plots
+  // Tiny Farm — multi-plot support with buyable plots (variant-based crops)
   const MONEY_KEY = 'tinyfarm_money_v1';
   const PLOTS_KEY = 'tinyfarm_plots_v1';
   const INV_KEY = 'tinyfarm_inv_v1';
   const FARM_NAME_KEY = 'tinyfarm_name_v1';
+  const FARMERS_KEY = 'tinyfarm_farmers_v1';
+  const FARMER_COST = 150;
+  const FARMER_COUNTER_KEY = 'tinyfarm_farmer_counter_v1';
 
+  // Plants: base price is the normal variant price; multipliers apply for better variants
   const PLANTS = {
-    carrot: { name: 'Carrot', grow: 10, price: 2, seedCost: 0 },
-    turnip: { name: 'Turnip', grow: 8, price: 5, seedCost: 2 }
+    carrot: { name: 'Carrot', grow: 10, price: 2, seedCost: 0,
+      variants: { normal:{mul:1}, silver:{mul:2}, gold:{mul:4}, diamond:{mul:10} },
+      variantOdds: { silver: 0.15, gold: 0.04, diamond: 0.01 }
+    },
+    turnip: { name: 'Turnip', grow: 8, price: 5, seedCost: 2,
+      variants: { normal:{mul:1}, silver:{mul:2}, gold:{mul:4}, diamond:{mul:10} },
+      variantOdds: { silver: 0.12, gold: 0.03, diamond: 0.005 }
+    }
   };
 
   // Small SVG thumbnails for seeds/plots. state can be 'idle'|'growing'|'harvest'
   function getPlantSVG(id, state){
     if(!id || id === 'empty'){
-      return '<svg width="28" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g><ellipse cx="12" cy="13" rx="3" ry="2" fill="#b88b6f"/><path d="M11 10c0 .6.4 1 1 1s1-.4 1-1-.4-1-1-1-1 .4-1 1z" fill="#8b5a3c"/></g></svg>';
+      return '<svg width="28" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g><ellipse cx="12" cy="13" rx="3" ry="2" fill="#b88b6f"/></g></svg>';
     }
     if(id === 'carrot'){
-      // simple carrot icon
       return '<svg width="36" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
         + '<g>'
         + '<path d="M6 2c0 0 2 1 3 3l-1 1 2 2 1-1 3 3-8 8-6-6 6-10z" fill="#f59e0b"/>'
@@ -32,12 +41,6 @@
     }
     return '';
   }
-
-  // Farmers
-  // Assumption: each farmer costs $150 to hire. Farmers can be assigned to a single plot and will
-  // automatically harvest that plot when the crop is ready.
-  const FARMERS_KEY = 'tinyfarm_farmers_v1';
-  const FARMER_COST = 150;
 
   // Helpers
   const $ = id => document.getElementById(id);
@@ -66,54 +69,125 @@
   let inventory = loadJSON(INV_KEY, {});
   let farmName = loadString(FARM_NAME_KEY, 'Tiny Farm');
 
+  // Ensure inventory entries are arrays of variant strings (migrate older numeric counts)
+  function normalizeInventory(){
+    Object.keys(inventory).forEach(id=>{
+      if(!Array.isArray(inventory[id])){
+        if(typeof inventory[id] === 'number'){
+          const count = inventory[id];
+          inventory[id] = Array.from({length: count}, ()=> 'normal');
+        } else {
+          inventory[id] = [];
+        }
+      }
+    });
+  }
+  normalizeInventory();
+
   // Farmers state: array of { id: number, assignedPlot: number|null }
   let farmers = loadJSON(FARMERS_KEY, []);
-  // helper for temporary assign mode: stores farmer id when user clicks "Assign" and then clicks a plot
+  // persistent counter to give sequential farmer numbers
+  let farmerCounter = loadNumber(FARMER_COUNTER_KEY, 0);
+  if((!farmerCounter || farmerCounter === 0) && Array.isArray(farmers) && farmers.length > 0){ farmerCounter = farmers.length; }
+
   let assigningFarmerId = null;
-  // track when the user is actively dragging a seed so we don't re-create plot DOM under the cursor
   let isDragging = false;
 
-  // Plot cost formula:
-  // - First purchased plot (when player has only the starter plot) costs $75
-  // - Subsequent plots follow the previous simple formula: 100 * (currentCount + 1)
-  function nextPlotCost(){
-    if (plots.length === 1) return 75;
-    return 100 * (plots.length + 1);
-  }
-
+  function nextPlotCost(){ if (plots.length === 1) return 75; return 100 * (plots.length + 1); }
   function saveAll(){ saveNumber(MONEY_KEY, money); saveJSON(PLOTS_KEY, plots); saveJSON(INV_KEY, inventory); saveString(FARM_NAME_KEY, farmName); saveJSON(FARMERS_KEY, farmers); }
+
+  // Determine variant for a harvested crop based on configured odds
+  function sampleVariantFor(plantId){
+    const p = PLANTS[plantId]; if(!p) return 'normal';
+    const odds = p.variantOdds || {};
+    const r = Math.random();
+    if(odds.diamond && r < odds.diamond) return 'diamond';
+    if(odds.gold && r < (odds.diamond || 0) + odds.gold) return 'gold';
+    if(odds.silver && r < (odds.diamond || 0) + (odds.gold || 0) + odds.silver) return 'silver';
+    return 'normal';
+  }
 
   // Rendering
   function updateMoney(){ if(moneyEl) moneyEl.textContent = fmt(money); updateBuyPlotButton(); }
-
   function renderFarmName(){ if(farmNameEl) farmNameEl.textContent = farmName || 'Tiny Farm'; }
 
-  function renderInventory(){ if(!inventoryEl) return; inventoryEl.innerHTML = ''; const keys = Object.keys(inventory).filter(k=>inventory[k]>0); if(keys.length===0){ inventoryEl.innerHTML = '<li class="muted">No crops</li>'; return; } keys.forEach(id=>{ const li=document.createElement('li'); const left=document.createElement('span'); left.textContent = `${PLANTS[id].name} x ${inventory[id]}`; const right=document.createElement('div'); const btn1=document.createElement('button'); btn1.textContent='Sell 1'; btn1.addEventListener('click', ()=>sellOne(id)); const btnAll=document.createElement('button'); btnAll.textContent='Sell All'; btnAll.style.marginLeft='6px'; btnAll.addEventListener('click', ()=>sellAll(id)); right.appendChild(btn1); right.appendChild(btnAll); li.appendChild(left); li.appendChild(right); inventoryEl.appendChild(li); }); }
+  function renderInventory(){
+    if(!inventoryEl) return;
+    inventoryEl.innerHTML = '';
+    const keys = Object.keys(inventory).filter(k => Array.isArray(inventory[k]) ? inventory[k].length > 0 : (inventory[k] && inventory[k] > 0));
+    if(keys.length === 0){ inventoryEl.innerHTML = '<li class="muted">No crops</li>'; return; }
+    keys.forEach(id => {
+      const items = Array.isArray(inventory[id]) ? inventory[id] : [];
+      const qty = items.length;
+      // count variants
+      const counts = items.reduce((acc, v)=>{ acc[v] = (acc[v]||0)+1; return acc; }, {});
+      // only show variants that the player actually has (>0)
+      const parts = Object.keys(counts).filter(v => (counts[v]||0) > 0).map(v => `${v}: ${counts[v]}`);
+      const li = document.createElement('li');
+      const left = document.createElement('span');
+      left.textContent = `${PLANTS[id].name} x ${qty} — ${parts.join(', ')}`;
+      const right = document.createElement('div');
+      const btn1 = document.createElement('button'); btn1.textContent = 'Sell 1'; btn1.addEventListener('click', ()=>sellOne(id));
+      const btnAll = document.createElement('button'); btnAll.textContent = 'Sell All'; btnAll.style.marginLeft = '6px'; btnAll.addEventListener('click', ()=>sellAll(id));
+      right.appendChild(btn1); right.appendChild(btnAll); li.appendChild(left); li.appendChild(right); inventoryEl.appendChild(li);
+    });
+  }
 
-  function renderMarket(){ if(!marketEl) return; marketEl.innerHTML=''; Object.keys(PLANTS).forEach(id=>{ const row=document.createElement('div'); row.className='market-row'; const left=document.createElement('div'); left.textContent = `${PLANTS[id].name} — Sell $${PLANTS[id].price}`; const sellBtn=document.createElement('button'); sellBtn.textContent='Sell All'; sellBtn.addEventListener('click', ()=>sellAll(id)); row.appendChild(left); row.appendChild(sellBtn); marketEl.appendChild(row); }); }
+  function renderMarket(){
+    if(!marketEl) return;
+    marketEl.innerHTML = '';
+    const header = document.createElement('div'); header.className = 'market-header'; header.textContent = 'Below are the variant chances for each crop and how each variant changes its sell value.';
+    marketEl.appendChild(header);
+    Object.keys(PLANTS).forEach(id=>{
+      const p = PLANTS[id];
+      const container = document.createElement('div'); container.className = 'market-row';
+      const title = document.createElement('div'); title.className = 'market-title'; title.textContent = `${p.name} — Base Price: ${fmt(p.price)}`;
+      container.appendChild(title);
 
-  // Farmers UI
+      const ul = document.createElement('ul'); ul.className = 'variant-list';
+      // compute explicit odds (normal is remainder)
+      const odds = p.variantOdds || {};
+      const diamondOdds = odds.diamond || 0;
+      const goldOdds = odds.gold || 0;
+      const silverOdds = odds.silver || 0;
+      const normalOdds = Math.max(0, 1 - (diamondOdds + goldOdds + silverOdds));
+      const order = ['normal','silver','gold','diamond'];
+      order.forEach(v => {
+        const mul = (p.variants && p.variants[v] && p.variants[v].mul) ? p.variants[v].mul : 1;
+        let chance = 0;
+        if(v === 'diamond') chance = diamondOdds;
+        else if(v === 'gold') chance = goldOdds;
+        else if(v === 'silver') chance = silverOdds;
+        else chance = normalOdds;
+        const li = document.createElement('li');
+        const pct = Math.round(chance * 10000) / 100; // percentage with 2 decimals
+        const value = Math.round((p.price || 1) * mul);
+        li.textContent = `${v} — Chance: ${pct}% — Multiplier: x${mul} — Sell Value: ${fmt(value)}`;
+        ul.appendChild(li);
+      });
+      container.appendChild(ul);
+      marketEl.appendChild(container);
+    });
+  }
+
+  // Farmers UI (unchanged behavior)
   function renderFarmersList(){ const list = $('farmers-list'); if(!list) return; list.innerHTML = ''; if(!farmers || farmers.length===0){ const p = document.createElement('div'); p.className='muted'; p.textContent = 'No farmers hired'; list.appendChild(p); } else {
       farmers.forEach(f=>{
         const row = document.createElement('div'); row.className = 'farmer-row';
         const left = document.createElement('div'); left.textContent = `Farmer #${f.id} — ${f.assignedPlot!==null? 'Plot ' + (f.assignedPlot+1) : 'Unassigned'}`;
         const right = document.createElement('div');
-        // auto-replant selector
         const sel = document.createElement('select'); sel.title = 'Auto-replant'; const offOpt = document.createElement('option'); offOpt.value = ''; offOpt.textContent = 'Auto: Off'; sel.appendChild(offOpt);
         Object.keys(PLANTS).forEach(pid=>{ const opt = document.createElement('option'); opt.value = pid; opt.textContent = `${PLANTS[pid].name}${PLANTS[pid].seedCost? ' — ' + fmt(PLANTS[pid].seedCost) : ''}`; sel.appendChild(opt); });
         sel.value = f.autoReplant || '';
         sel.addEventListener('change', ()=>{ f.autoReplant = sel.value || null; saveJSON(FARMERS_KEY, farmers); renderFarmersList(); });
-        const assignBtn = document.createElement('button'); assignBtn.textContent = f.assignedPlot===null ? 'Assign' : 'Reassign'; assignBtn.addEventListener('click', ()=>{ // start assign mode
-          assigningFarmerId = f.id; if(plotsContainer) plotsContainer.classList.add('assigning');
-        });
+        const assignBtn = document.createElement('button'); assignBtn.textContent = f.assignedPlot===null ? 'Assign' : 'Reassign'; assignBtn.addEventListener('click', ()=>{ assigningFarmerId = f.id; if(plotsContainer) plotsContainer.classList.add('assigning'); });
         const unassignBtn = document.createElement('button'); unassignBtn.textContent = 'Unassign'; unassignBtn.style.marginLeft='6px'; unassignBtn.addEventListener('click', ()=>{ const ff = farmers.find(x=>x.id===f.id); if(ff){ ff.assignedPlot = null; saveJSON(FARMERS_KEY,farmers); renderFarmersList(); renderPlots(); } });
-        const fireBtn = document.createElement('button'); fireBtn.textContent='Fire'; fireBtn.style.marginLeft='6px'; fireBtn.addEventListener('click', ()=>{ if(!confirm('Fire this farmer?')) return; farmers = farmers.filter(x=>x.id!==f.id); saveJSON(FARMERS_KEY,farmers); renderFarmersList(); renderPlots(); });
+        const fireBtn = document.createElement('button'); fireBtn.textContent='Fire'; fireBtn.style.marginLeft='6px'; fireBtn.addEventListener('click', ()=>{ if(!confirm('Fire this farmer?')) return; farmers = farmers.filter(x=>x.id !== f.id); if(assigningFarmerId === f.id) assigningFarmerId = null; for(let i=0;i<farmers.length;i++){ farmers[i].id = i+1; } farmerCounter = farmers.length; saveNumber(FARMER_COUNTER_KEY, farmerCounter); saveJSON(FARMERS_KEY,farmers); renderFarmersList(); renderPlots(); });
         right.appendChild(sel); right.appendChild(assignBtn); right.appendChild(unassignBtn); right.appendChild(fireBtn);
         row.appendChild(left); row.appendChild(right); list.appendChild(row);
       });
     }
-    // hire button
-    const hireWrap = document.createElement('div'); hireWrap.style.marginTop='10px'; const hireBtn = document.createElement('button'); hireBtn.textContent = `Hire Farmer — ${fmt(FARMER_COST)}`; hireBtn.disabled = money < FARMER_COST; hireBtn.addEventListener('click', ()=>{ if(money < FARMER_COST) return; if(!confirm(`Hire farmer for ${fmt(FARMER_COST)}?`)) return; money -= FARMER_COST; const newFarmer = { id: Date.now(), assignedPlot: null, autoReplant: null }; farmers.push(newFarmer); saveNumber(MONEY_KEY, money); saveJSON(FARMERS_KEY, farmers); updateMoney(); renderFarmersList(); }); hireWrap.appendChild(hireBtn); list.appendChild(hireWrap);
+    const hireWrap = document.createElement('div'); hireWrap.style.marginTop='10px'; const hireBtn = document.createElement('button'); hireBtn.textContent = `Hire Farmer — ${fmt(FARMER_COST)}`; hireBtn.disabled = money < FARMER_COST; hireBtn.addEventListener('click', ()=>{ if(money < FARMER_COST) return; if(!confirm(`Hire farmer for ${fmt(FARMER_COST)}?`)) return; money -= FARMER_COST; farmerCounter = (Number.isFinite(farmerCounter) ? farmerCounter : 0) + 1; const newFarmer = { id: farmerCounter, assignedPlot: null, autoReplant: null }; farmers.push(newFarmer); saveNumber(MONEY_KEY, money); saveJSON(FARMERS_KEY, farmers); saveNumber(FARMER_COUNTER_KEY, farmerCounter); updateMoney(); renderFarmersList(); }); hireWrap.appendChild(hireBtn); list.appendChild(hireWrap);
   }
 
   function openFarmersPanel(){ const panel = $('farmers-panel'); if(panel) { panel.hidden = false; renderFarmersList(); } }
@@ -125,22 +199,15 @@
     wrapper.tabIndex = 0;
     wrapper.setAttribute('role','button');
     wrapper.dataset.index = String(idx);
-
-  const inner = document.createElement('div'); inner.className = 'plot-inner';
-  const seedIcon = document.createElement('div'); seedIcon.className = 'seed-icon'; seedIcon.innerHTML = getPlantSVG('empty','idle');
+    const inner = document.createElement('div'); inner.className = 'plot-inner';
+    const seedIcon = document.createElement('div'); seedIcon.className = 'seed-icon'; seedIcon.innerHTML = getPlantSVG('empty','idle');
     const progress = document.createElement('div'); progress.className = 'progress';
     const bar = document.createElement('div'); bar.className = 'bar'; bar.style.width = '0%'; progress.appendChild(bar);
-    inner.appendChild(seedIcon); inner.appendChild(progress);
-    wrapper.appendChild(inner);
-
+    inner.appendChild(seedIcon); inner.appendChild(progress); wrapper.appendChild(inner);
     const label = document.createElement('div'); label.className = 'plot-label'; label.innerHTML = `Plot ${idx+1}<br><small class="plot-state">Empty</small>`;
     const stateEl = label.querySelector('.plot-state');
-  // farmer badge
-  const farmerBadge = document.createElement('div'); farmerBadge.className = 'farmer-badge'; farmerBadge.style.display = 'none'; farmerBadge.title = 'Assigned farmer';
-  farmerBadge.textContent = '👩‍🌾';
-  inner.appendChild(farmerBadge);
+    const farmerBadge = document.createElement('div'); farmerBadge.className = 'farmer-badge'; farmerBadge.style.display = 'none'; farmerBadge.title = 'Assigned farmer'; farmerBadge.textContent = '👩‍🌾'; inner.appendChild(farmerBadge);
 
-    // Update UI based on data
     function refresh(){
       const p = plots[idx];
       if(!p){ wrapper.classList.remove('planted'); stateEl.textContent = 'Empty'; wrapper.setAttribute('aria-label','Empty plot. Drag a seed here to plant'); bar.style.width='0%'; seedIcon.innerHTML = getPlantSVG('empty','idle');
@@ -153,368 +220,62 @@
         else { stateEl.textContent = `${plant.name} — Growing (${elapsed}s / ${plant.grow}s)`; seedIcon.innerHTML = getPlantSVG(p.plantId,'growing'); wrapper.setAttribute('aria-label', `${plant.name} growing`); }
         wrapper.classList.add('planted');
       }
-      // show farmer badge if a farmer is assigned to this plot (farmers state checked at render)
-      try{
-        const assigned = farmers && farmers.find && farmers.find(f=>f.assignedPlot === idx);
-        if(assigned){ farmerBadge.style.display = 'block'; farmerBadge.title = `Farmer #${assigned.id} assigned to this plot`; }
-        else { farmerBadge.style.display = 'none'; }
-      }catch(e){ farmerBadge.style.display = 'none'; }
+      try{ const assigned = farmers && farmers.find && farmers.find(f=>f.assignedPlot === idx); if(assigned){ farmerBadge.style.display = 'block'; farmerBadge.title = `Farmer #${assigned.id} assigned to this plot`; } else { farmerBadge.style.display = 'none'; } }catch(e){ farmerBadge.style.display = 'none'; }
     }
 
-    // Events
     wrapper.addEventListener('click', ()=>{
-      // If we're in assign mode, assign this plot to the selected farmer
-      if(assigningFarmerId !== null){
-        const farmer = farmers.find(f=>f.id === assigningFarmerId);
-        if(farmer){
-          // prevent multiple farmers on same plot
-          const already = farmers.find(f=>f.assignedPlot === idx && f.id !== farmer.id);
-          if(already){
-            // simple feedback: set title briefly
-            const prev = document.title; document.title = 'Plot already has a farmer'; setTimeout(()=>document.title = prev, 800);
-          } else {
-            farmer.assignedPlot = idx;
-            saveJSON(FARMERS_KEY, farmers);
-            renderFarmersList();
-            renderPlots();
-          }
-        }
-        assigningFarmerId = null;
-        if(plotsContainer) plotsContainer.classList.remove('assigning');
-        return;
-      }
-
-      const p = plots[idx];
-      if(!p) return; const plant = PLANTS[p.plantId]; const elapsed = Math.floor((Date.now()-p.plantedAt)/1000); if(elapsed>=plant.grow){ harvest(idx); }
+      if(assigningFarmerId !== null){ const farmer = farmers.find(f=>f.id === assigningFarmerId); if(farmer){ const already = farmers.find(f=>f.assignedPlot === idx && f.id !== farmer.id); if(already){ const prev = document.title; document.title = 'Plot already has a farmer'; setTimeout(()=>document.title = prev, 800); } else { farmer.assignedPlot = idx; saveJSON(FARMERS_KEY, farmers); renderFarmersList(); renderPlots(); } } assigningFarmerId = null; if(plotsContainer) plotsContainer.classList.remove('assigning'); return; }
+      const p = plots[idx]; if(!p) return; const plant = PLANTS[p.plantId]; const elapsed = Math.floor((Date.now()-p.plantedAt)/1000); if(elapsed>=plant.grow){ harvest(idx); }
     });
     wrapper.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); wrapper.click(); } });
-
-    // drag/drop
     wrapper.addEventListener('dragover', (e)=>{ e.preventDefault(); e.dataTransfer.dropEffect='copy'; wrapper.classList.add('drag-over'); });
     wrapper.addEventListener('dragleave', ()=>{ wrapper.classList.remove('drag-over'); });
     wrapper.addEventListener('drop', (e)=>{ e.preventDefault(); wrapper.classList.remove('drag-over'); const pid = e.dataTransfer.getData('text/plain'); if(pid && PLANTS[pid] && !plots[idx]){ plantCrop(pid, idx); } });
-
-    // expose refresh method
-    wrapper._refresh = refresh;
-    return {el: wrapper, labelEl: label, refresh};
+    wrapper._refresh = refresh; return {el: wrapper, labelEl: label, refresh};
   }
 
-  function renderPlots(){
-    if(!plotsContainer) return;
-    // If the user is currently dragging a seed, avoid replacing the plot DOM elements
-    // (replacing interrupts the native drag and causes the "not-allowed" cursor to flash).
-    if(isDragging){
-      // refresh existing plot elements in-place
-      const existingPlots = plotsContainer.querySelectorAll('.plot');
-      existingPlots.forEach(pel=>{ try{ if(typeof pel._refresh === 'function') pel._refresh(); }catch(e){} });
-      // ensure labels are in reasonable state (best-effort)
-      const containers = plotsContainer.children;
-      for(let i=0;i<plots.length && i<containers.length;i++){
-        try{
-          const label = containers[i].querySelector('.plot-label');
-          if(label){
-            const stateText = plots[i] ? (PLANTS[plots[i].plantId] && PLANTS[plots[i].plantId].name ? PLANTS[plots[i].plantId].name : 'Growing') : 'Empty';
-            label.innerHTML = `Plot ${i+1}<br><small class="plot-state">${stateText}</small>`;
-          }
-        }catch(e){}
-      }
-      return;
-    }
+  function renderPlots(){ if(!plotsContainer) return; if(isDragging){ const existingPlots = plotsContainer.querySelectorAll('.plot'); existingPlots.forEach(pel=>{ try{ if(typeof pel._refresh === 'function') pel._refresh(); }catch(e){} }); const containers = plotsContainer.children; for(let i=0;i<plots.length && i<containers.length;i++){ try{ const label = containers[i].querySelector('.plot-label'); if(label){ const stateText = plots[i] ? (PLANTS[plots[i].plantId] && PLANTS[plots[i].plantId].name ? PLANTS[plots[i].plantId].name : 'Growing') : 'Empty'; label.innerHTML = `Plot ${i+1}<br><small class="plot-state">${stateText}</small>`; } }catch(e){} } return; }
+    plotsContainer.innerHTML = ''; const elements = []; plots.forEach((p, idx)=>{ const {el,labelEl,refresh} = createPlotElement(idx,p); const container = document.createElement('div'); container.style.textAlign='center'; container.appendChild(el); container.appendChild(labelEl); plotsContainer.appendChild(container); elements.push({el,refresh}); }); elements.forEach(x=>x.refresh()); }
 
-    plotsContainer.innerHTML = '';
-    const elements = [];
-    plots.forEach((p, idx)=>{
-      const {el,labelEl,refresh} = createPlotElement(idx,p);
-      const container = document.createElement('div');
-      container.style.textAlign='center';
-      container.appendChild(el);
-      container.appendChild(labelEl);
-      plotsContainer.appendChild(container);
-      elements.push({el,refresh});
-    });
-    // refresh immediately
-    elements.forEach(x=>x.refresh());
-  }
+  function plantCrop(plantId, idx){ if(plots[idx]) return; const plant = PLANTS[plantId]; if(!plant) return; const cost = Number(plant.seedCost || 0); if(cost > 0){ if(money < cost){ const prev = document.title; document.title = 'Not enough money'; setTimeout(()=>document.title = prev, 800); return; } money -= cost; saveNumber(MONEY_KEY, money); updateMoney(); } plots[idx] = { plantId, plantedAt: Date.now() }; saveJSON(PLOTS_KEY, plots); renderPlots(); }
 
-  // Planting / harvesting
-  function plantCrop(plantId, idx){
-    if(plots[idx]) return;
-    const plant = PLANTS[plantId];
-    if(!plant) return;
-    const cost = Number(plant.seedCost || 0);
-    if(cost > 0){
-      if(money < cost){
-        // not enough money to plant
-        // simple feedback: flash document title briefly
-        const prev = document.title;
-        document.title = 'Not enough money';
-        setTimeout(()=>document.title = prev, 800);
-        return;
-      }
-      money -= cost;
-      saveNumber(MONEY_KEY, money);
-      updateMoney();
-    }
-    plots[idx] = { plantId, plantedAt: Date.now() };
-    saveJSON(PLOTS_KEY, plots);
-    renderPlots();
-  }
-  function harvest(idx){ if(!plots[idx]) return; const plant = PLANTS[plots[idx].plantId]; const elapsed = Math.floor((Date.now()-plots[idx].plantedAt)/1000); if(elapsed < plant.grow) return; inventory[plots[idx].plantId] = (inventory[plots[idx].plantId]||0) + 1; plots[idx] = null; saveJSON(INV_KEY, inventory); saveJSON(PLOTS_KEY, plots); renderPlots(); renderInventory(); }
+  function harvest(idx){ if(!plots[idx]) return; const plant = PLANTS[plots[idx].plantId]; const elapsed = Math.floor((Date.now()-plots[idx].plantedAt)/1000); if(elapsed < plant.grow) return; const pid = plots[idx].plantId; const variant = sampleVariantFor(pid); inventory[pid] = Array.isArray(inventory[pid]) ? inventory[pid] : []; inventory[pid].push(variant); plots[idx] = null; saveJSON(INV_KEY, inventory); saveJSON(PLOTS_KEY, plots); renderPlots(); renderInventory(); }
 
-  // Selling
-  function sellOne(id){ if(!inventory[id]||inventory[id]<=0) return; inventory[id]--; money += PLANTS[id].price; saveJSON(INV_KEY, inventory); saveNumber(MONEY_KEY, money); updateMoney(); renderInventory(); }
-  function sellAll(id){ const qty = inventory[id]||0; if(qty<=0) return; money += qty * PLANTS[id].price; inventory[id]=0; saveJSON(INV_KEY, inventory); saveNumber(MONEY_KEY, money); updateMoney(); renderInventory(); }
+  function sellOne(id){ const items = Array.isArray(inventory[id]) ? inventory[id] : []; if(!items || items.length === 0) return; const plant = PLANTS[id]; // pick highest multiplier variant available
+    let bestIdx = 0; let bestMul = 0; for(let i=0;i<items.length;i++){ const v = items[i]; const mul = (plant.variants && plant.variants[v] && plant.variants[v].mul) ? plant.variants[v].mul : 1; if(mul > bestMul){ bestMul = mul; bestIdx = i; } }
+    const variant = items.splice(bestIdx,1)[0]; inventory[id] = items; const gained = Math.round((plant.price || 1) * ((plant.variants && plant.variants[variant] && plant.variants[variant].mul) || 1)); money += gained; saveJSON(INV_KEY, inventory); saveNumber(MONEY_KEY, money); updateMoney(); renderInventory(); }
 
-  // Buy plot
+  function sellAll(id){ const items = Array.isArray(inventory[id]) ? inventory[id] : []; if(!items || items.length === 0) return; const plant = PLANTS[id]; let total = 0; items.forEach(v=>{ const mul = (plant.variants && plant.variants[v] && plant.variants[v].mul) ? plant.variants[v].mul : 1; total += (plant.price || 1) * mul; }); const gained = Math.round(total); money += gained; inventory[id] = []; saveJSON(INV_KEY, inventory); saveNumber(MONEY_KEY, money); updateMoney(); renderInventory(); }
+
   function updateBuyPlotButton(){ if(!buyPlotBtn) return; const cost = nextPlotCost(); buyPlotBtn.textContent = `Buy Plot — ${fmt(cost)}`; buyPlotBtn.disabled = money < cost; }
+
   function buyPlot(){ const cost = nextPlotCost(); if(money < cost) return; money -= cost; plots.push(null); saveNumber(MONEY_KEY,money); saveJSON(PLOTS_KEY,plots); updateMoney(); renderPlots(); }
 
-  // Reset
   function resetGame(){ if(!confirm('Reset game? This clears money, inventory and plots.')) return; money = 0; plots = [null]; inventory = {}; farmName = 'Tiny Farm'; saveAll(); renderPlots(); renderInventory(); renderFarmName(); updateMoney(); }
 
-  // Ticker updates progress bars
-  let ticker = null; function tick(){ // refresh each plot element by re-rendering entire plots to keep simple
-    // Auto-harvest: farmers assigned to plots will harvest when the crop is ready
-    try{
-      if(farmers && farmers.length){
-        farmers.forEach(f=>{
-          const idx = f.assignedPlot;
-          if(typeof idx === 'number' && !isNaN(idx) && plots[idx]){
-            const plant = PLANTS[plots[idx].plantId];
-      if(plant){ const elapsed = Math.floor((Date.now()-plots[idx].plantedAt)/1000); if(elapsed >= plant.grow){ harvest(idx); // attempt auto-replant if configured for this farmer
-        try{ if(f.autoReplant){ plantCrop(f.autoReplant, idx); } }catch(e){ /* ignore */ } } }
-          }
-        });
-      }
-    }catch(e){ /* ignore */ }
-    renderPlots(); }
+  let ticker = null; function tick(){ try{ if(farmers && farmers.length){ farmers.forEach(f=>{ const idx = f.assignedPlot; if(typeof idx === 'number' && !isNaN(idx) && plots[idx]){ const plant = PLANTS[plots[idx].plantId]; if(plant){ const elapsed = Math.floor((Date.now()-plots[idx].plantedAt)/1000); if(elapsed >= plant.grow){ harvest(idx); try{ if(f.autoReplant){ plantCrop(f.autoReplant, idx); } }catch(e){} } } } }); } }catch(e){} renderPlots(); }
   function startTicker(){ if(ticker) return; ticker = setInterval(tick, 1000); }
   function stopTicker(){ if(ticker){ clearInterval(ticker); ticker=null; } }
 
-  // Seed tray dragstart
-  function setupSeedTray(){ if(!seedTray) return; seedTray.querySelectorAll('[data-plant]').forEach(el=>{ el.addEventListener('dragstart', (e)=>{ e.dataTransfer.setData('text/plain', el.dataset.plant); e.dataTransfer.effectAllowed='copy'; }); // support click for touch fallback
-    el.addEventListener('click', ()=>{ // select seed for tap-to-plant fallback
-      // mark selected seed on tray
-      seedTray.querySelectorAll('.seed').forEach(s=>s.classList.remove('selected'));
-      el.classList.add('selected');
-      // next tap on an empty plot will plant
-      // attach a one-time click handler to container
-      const handler = function(ev){ const target = ev.target; const plotEl = target.closest ? target.closest('.plot') : null; if(!plotEl) return; const idx = parseInt(plotEl.dataset.index,10); if(!isNaN(idx) && !plots[idx]){ plantCrop(el.dataset.plant, idx); el.classList.remove('selected'); try{ plotsContainerEl.removeEventListener('click', handler); }catch(e){} } };
-      const plotsContainerEl = $('plots'); if(plotsContainerEl){ plotsContainerEl.addEventListener('click', handler); setTimeout(()=>{ // auto-clear selection after 8s
-        el.classList.remove('selected');
-        try{ plotsContainerEl.removeEventListener('click', handler); }catch(e){}
-      }, 8000); }
-    }); }); }
+  function setupSeedTray(){ if(!seedTray) return; seedTray.querySelectorAll('[data-plant]').forEach(el=>{ el.addEventListener('dragstart', (e)=>{ e.dataTransfer.setData('text/plain', el.dataset.plant); e.dataTransfer.effectAllowed='copy'; }); el.addEventListener('click', ()=>{ seedTray.querySelectorAll('.seed').forEach(s=>s.classList.remove('selected')); el.classList.add('selected'); const handler = function(ev){ const target = ev.target; const plotEl = target.closest ? target.closest('.plot') : null; if(!plotEl) return; const idx = parseInt(plotEl.dataset.index,10); if(!isNaN(idx) && !plots[idx]){ plantCrop(el.dataset.plant, idx); el.classList.remove('selected'); try{ plotsContainer.removeEventListener('click', handler); }catch(e){} } }; if(plotsContainer){ plotsContainer.addEventListener('click', handler); setTimeout(()=>{ el.classList.remove('selected'); try{ plotsContainer.removeEventListener('click', handler); }catch(e){} }, 8000); } }); }); }
 
-  // UI wiring and init
-  function init(){
-    renderFarmName(); renderInventory(); renderMarket(); renderPlots(); updateMoney();
-    setupSeedTray(); startTicker();
-    if(buyPlotBtn) buyPlotBtn.addEventListener('click', buyPlot);
-    if(resetBtn) resetBtn.addEventListener('click', resetGame);
-  // Farmers panel wiring
-  const farmersBtn = $('farmers-btn');
-  const farmersClose = $('farmers-close');
-  if(farmersBtn) farmersBtn.addEventListener('click', ()=>{ const panel = $('farmers-panel'); if(panel){ panel.hidden = !panel.hidden; if(!panel.hidden) renderFarmersList(); } });
-  if(farmersClose) farmersClose.addEventListener('click', ()=>{ closeFarmersPanel(); });
-    if(editNameBtn) editNameBtn.addEventListener('click', ()=>{ const v = prompt('Enter farm name', farmName); if(v!==null){ const s=v.trim(); if(s.length){ farmName = s; saveString(FARM_NAME_KEY, farmName); renderFarmName(); } } });
-    if(farmNameEl) farmNameEl.addEventListener('dblclick', ()=>{ const v = prompt('Enter farm name', farmName); if(v!==null){ const s=v.trim(); if(s.length){ farmName = s; saveString(FARM_NAME_KEY, farmName); renderFarmName(); } } });
-    // update buy button when money changes (hook into global saveAll calls)
-    // but also ensure it's correct now
-    updateBuyPlotButton();
-    // keyboard ESC no-op
+  function init(){ renderFarmName(); renderInventory(); renderMarket(); renderPlots(); updateMoney(); setupSeedTray(); startTicker(); if(buyPlotBtn) buyPlotBtn.addEventListener('click', buyPlot); if(resetBtn) resetBtn.addEventListener('click', resetGame);
+    const farmersBtn = $('farmers-btn'); const farmersClose = $('farmers-close'); if(farmersBtn) farmersBtn.addEventListener('click', ()=>{ const panel = $('farmers-panel'); if(panel){ panel.hidden = !panel.hidden; if(!panel.hidden) renderFarmersList(); } }); if(farmersClose) farmersClose.addEventListener('click', ()=>{ closeFarmersPanel(); }); if(editNameBtn) editNameBtn.addEventListener('click', ()=>{ const v = prompt('Enter farm name', farmName); if(v!==null){ const s=v.trim(); if(s.length){ farmName = s; saveString(FARM_NAME_KEY, farmName); renderFarmName(); } } }); if(farmNameEl) farmNameEl.addEventListener('dblclick', ()=>{ const v = prompt('Enter farm name', farmName); if(v!==null){ const s=v.trim(); if(s.length){ farmName = s; saveString(FARM_NAME_KEY, farmName); renderFarmName(); } } }); updateBuyPlotButton();
+
+    const adminBtn = $('admin-btn'); const adminModal = document.getElementById('admin-modal'); const adminAmount = document.getElementById('admin-amount'); const adminGive = document.getElementById('admin-give-btn'); const adminClose = document.getElementById('admin-close-btn');
+    if(adminBtn){ adminBtn.addEventListener('click', ()=>{ if(adminModal) adminModal.hidden = false; const pass = document.getElementById('admin-passcode'); const controls = document.getElementById('admin-controls'); if(controls) controls.hidden = true; if(pass){ pass.value=''; setTimeout(()=>pass.focus(),60); } }); }
+    if(adminClose){ adminClose.addEventListener('click', ()=>{ if(adminModal) adminModal.hidden = true; }); }
+    const adminUnlock = document.getElementById('admin-unlock-btn'); if(adminUnlock){ adminUnlock.addEventListener('click', ()=>{ const pass = document.getElementById('admin-passcode'); const controls = document.getElementById('admin-controls'); if(pass && controls){ if(pass.value === '2005'){ controls.hidden = false; const amountEl = document.getElementById('admin-amount'); if(amountEl) setTimeout(()=>amountEl.focus(),60); } else { try{ const prev = document.title; document.title = 'Wrong passcode'; setTimeout(()=>document.title = prev, 900); }catch(e){} } } }); }
+    if(adminGive){ adminGive.addEventListener('click', ()=>{ if(!adminAmount) return; const n = Number(adminAmount.value); if(!Number.isFinite(n) || n <= 0) return; money += Math.round(n); saveNumber(MONEY_KEY, money); updateMoney(); if(adminModal) adminModal.hidden = true; }); }
     window.addEventListener('beforeunload', saveAll);
 
-  // Ensure drops are allowed and provide a document-level drop fallback — some browsers may not dispatch drop on the nested plot element
-  document.addEventListener('dragover', function(e){ e.preventDefault(); });
-  // Track drag state so we don't re-create plot DOM while the user is dragging (prevents flicker/forbidden cursor)
-  document.addEventListener('dragstart', function(){ isDragging = true; }, true);
-  document.addEventListener('dragend', function(){ isDragging = false; }, true);
-    document.addEventListener('drop', function(e){
-      // if the drop was already handled by a plot element, do nothing
-      try{
-        const pid = e.dataTransfer.getData('text/plain');
-        if(!pid) return;
-        const el = document.elementFromPoint(e.clientX, e.clientY);
-        const plotEl = el && el.closest ? el.closest('.plot') : null;
-        if(plotEl){ const idx = parseInt(plotEl.dataset.index,10); if(!isNaN(idx) && !plots[idx]){ plantCrop(pid, idx); } }
-        // drop ends dragging
-        isDragging = false;
-      }catch(err){ /* ignore */ }
-    });
+    document.addEventListener('dragover', function(e){ e.preventDefault(); });
+    document.addEventListener('dragstart', function(){ isDragging = true; }, true);
+    document.addEventListener('dragend', function(){ isDragging = false; }, true);
+    document.addEventListener('drop', function(e){ try{ const pid = e.dataTransfer.getData('text/plain'); if(!pid) return; const el = document.elementFromPoint(e.clientX, e.clientY); const plotEl = el && el.closest ? el.closest('.plot') : null; if(plotEl){ const idx = parseInt(plotEl.dataset.index,10); if(!isNaN(idx) && !plots[idx]){ plantCrop(pid, idx); } } isDragging = false; }catch(err){} });
   }
 
-  // startup
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 
-})();
- (function(){
-	// Tiny Farm — single plot with Carrots
-	const MONEY_KEY = 'tinyfarm_money_v1';
-	const PLOT_KEY = 'tinyfarm_plot_v1';
-	const INV_KEY = 'tinyfarm_inv_v1';
-
-	const PLANTS = {
-		carrot: { name: 'Carrot', grow: 10, price: 5 }
-	};
-
-  function getPlantSVGLocal(id, state){
-    if(!id || id === 'empty'){
-      return '<svg width="28" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g><ellipse cx="12" cy="13" rx="3" ry="2" fill="#b88b6f"/></g></svg>';
-    }
-    if(id === 'carrot'){
-      return '<svg width="36" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
-        + '<g>'
-        + '<path d="M6 2c0 0 2 1 3 3l-1 1 2 2 1-1 3 3-8 8-6-6 6-10z" fill="#f59e0b"/>'
-        + '<path d="M11 3c0 0 1 1 2 2 1 1 2 2 2 2l1-1c0 0-1-2-3-3-2-1-4-0-4-0z" fill="#16a34a"/>'
-        + '</g></svg>';
-    }
-    return '';
-  }
-
-	function $(id){ return document.getElementById(id); }
-
-	const moneyEl = $('money');
-	const plotEl = $('plot');
-	const plotStateEl = $('plot-state');
-	const progressBar = plotEl && plotEl.querySelector('.bar');
-	const inventoryEl = $('inventory');
-	const marketEl = $('market');
-	const resetBtn = $('reset-btn');
-	const farmNameEl = $('farm-name');
-	const editNameBtn = $('edit-name-btn');
-
-	const FARM_NAME_KEY = 'tinyfarm_name_v1';
-
-	let money = loadNumber(MONEY_KEY, 0);
-	let plot = loadJSON(PLOT_KEY, null);
-	let inventory = loadJSON(INV_KEY, {});
-
-	let ticker = null;
-
-	function saveNumber(key, n){ localStorage.setItem(key, String(n)); }
-	function saveJSON(key, obj){ localStorage.setItem(key, JSON.stringify(obj)); }
-	function loadJSON(key, fallback){ try{ const r = localStorage.getItem(key); return r ? JSON.parse(r) : fallback; } catch(e){ return fallback; } }
-	function loadNumber(key, fallback){ const r = localStorage.getItem(key); const n = parseInt(r,10); return Number.isFinite(n) ? n : fallback; }
-	function saveString(key, s){ localStorage.setItem(key, String(s)); }
-	function loadString(key, fallback){ const r = localStorage.getItem(key); return (r === null || r === undefined) ? fallback : String(r); }
-	function format(n){ return '$' + n.toLocaleString(); }
-
-	function updateMoney(){ if(moneyEl) moneyEl.textContent = format(money); }
-
-	// Farm name
-	let farmName = loadString(FARM_NAME_KEY, 'Tiny Farm');
-	function renderFarmName(){ if(farmNameEl) farmNameEl.textContent = farmName || 'Tiny Farm'; }
-	function setFarmName(name){ farmName = name || 'Tiny Farm'; saveString(FARM_NAME_KEY, farmName); renderFarmName(); }
-
-	function renderPlot(){
-		if(!plotEl) return;
-		if(!plot){
-			plotEl.classList.remove('planted');
-			plotStateEl.textContent = 'Empty';
-			plotEl.setAttribute('aria-label', 'Empty plot. Click to plant');
-      if(progressBar) progressBar.style.width = '0%';
-      plotEl.querySelector('.seed-icon').innerHTML = getPlantSVGLocal('empty','idle');
-		} else {
-			const plant = PLANTS[plot.plantId];
-			const now = Date.now();
-			const elapsed = Math.max(0, Math.floor((now - plot.plantedAt)/1000));
-			const pct = Math.min(100, Math.round((elapsed / plant.grow) * 100));
-			if(progressBar) progressBar.style.width = pct + '%';
-			if(elapsed >= plant.grow){
-        plotStateEl.textContent = `${plant.name} — Ready to harvest`;
-        plotEl.querySelector('.seed-icon').innerHTML = getPlantSVGLocal(plot.plantId,'harvest');
-				plotEl.setAttribute('aria-label', `${plant.name} ready to harvest. Click to harvest`);
-			} else {
-        plotStateEl.textContent = `${plant.name} — Growing (${elapsed}s / ${plant.grow}s)`;
-        plotEl.querySelector('.seed-icon').innerHTML = getPlantSVGLocal(plot.plantId,'growing');
-				plotEl.setAttribute('aria-label', `${plant.name} growing. ${elapsed} of ${plant.grow} seconds`);
-			}
-			plotEl.classList.add('planted');
-		}
-	}
-
-	function renderInventory(){
-		if(!inventoryEl) return;
-		inventoryEl.innerHTML = '';
-		const keys = Object.keys(inventory).filter(k => inventory[k] > 0);
-		if(keys.length === 0){ inventoryEl.innerHTML = '<li class="muted">No crops</li>'; return; }
-		keys.forEach(id => {
-			const li = document.createElement('li');
-			const left = document.createElement('span'); left.textContent = `${PLANTS[id].name} x ${inventory[id]}`;
-			const right = document.createElement('div');
-			const btnSell1 = document.createElement('button'); btnSell1.textContent = 'Sell 1'; btnSell1.addEventListener('click', ()=>{ sellOne(id); });
-			const btnSellAll = document.createElement('button'); btnSellAll.textContent = 'Sell All'; btnSellAll.style.marginLeft='6px'; btnSellAll.addEventListener('click', ()=>{ sellAll(id); });
-			right.appendChild(btnSell1); right.appendChild(btnSellAll);
-			li.appendChild(left); li.appendChild(right);
-			inventoryEl.appendChild(li);
-		});
-	}
-
-	function renderMarket(){
-		if(!marketEl) return;
-		marketEl.innerHTML = '';
-		Object.keys(PLANTS).forEach(id => {
-			const row = document.createElement('div'); row.className = 'market-row';
-			const left = document.createElement('div'); left.textContent = `${PLANTS[id].name} — Sell $${PLANTS[id].price}`;
-			const sellBtn = document.createElement('button'); sellBtn.textContent = 'Sell All'; sellBtn.addEventListener('click', ()=>{ sellAll(id); });
-			row.appendChild(left); row.appendChild(sellBtn); marketEl.appendChild(row);
-		});
-	}
-
-
-
-	function plantCrop(id){ if(plot) return; plot = { plantId: id, plantedAt: Date.now() }; saveJSON(PLOT_KEY, plot); renderPlot(); }
-
-	function harvest(){ if(!plot) return; const plant = PLANTS[plot.plantId]; const elapsed = Math.floor((Date.now()-plot.plantedAt)/1000); if(elapsed < plant.grow) return; inventory[plot.plantId] = (inventory[plot.plantId]||0) + 1; saveJSON(INV_KEY, inventory); plot = null; saveJSON(PLOT_KEY, plot); renderPlot(); renderInventory(); }
-
-	function sellOne(id){ if(!inventory[id] || inventory[id] <= 0) return; inventory[id]--; money += PLANTS[id].price; saveJSON(INV_KEY, inventory); saveNumber(MONEY_KEY, money); updateMoney(); renderInventory(); }
-	function sellAll(id){ const qty = inventory[id] || 0; if(qty <= 0) return; money += qty * PLANTS[id].price; inventory[id] = 0; saveJSON(INV_KEY, inventory); saveNumber(MONEY_KEY, money); updateMoney(); renderInventory(); }
-
-	function resetGame(){ if(!confirm('Reset game? This clears money, inventory and plot.')) return; money = 0; plot = null; inventory = {}; saveNumber(MONEY_KEY, money); saveJSON(PLOT_KEY, plot); saveJSON(INV_KEY, inventory); updateMoney(); renderPlot(); renderInventory(); }
-
-	function tick(){ renderPlot(); }
-	function startTicker(){ if(ticker) return; ticker = setInterval(tick, 1000); }
-	function stopTicker(){ if(ticker){ clearInterval(ticker); ticker = null; } }
-
-	function setup(){
-		if(plotEl){
-			plotEl.addEventListener('click', ()=>{ if(!plot) { /* no-op: use seed tray to plant */ return; } else { const plant = PLANTS[plot.plantId]; const elapsed = Math.floor((Date.now()-plot.plantedAt)/1000); if(elapsed >= plant.grow) harvest(); } });
-			plotEl.addEventListener('keydown', (e)=>{ if(e.key === 'Enter' || e.key === ' ') { e.preventDefault(); plotEl.click(); } });
-		}
-
-		// Farm name UI
-		if(editNameBtn){ editNameBtn.addEventListener('click', function(){ const v = prompt('Enter farm name', farmName); if(v !== null){ const s = v.trim(); if(s.length) setFarmName(s); } }); }
-		if(farmNameEl){ farmNameEl.addEventListener('dblclick', function(){ const v = prompt('Enter farm name', farmName); if(v !== null){ const s = v.trim(); if(s.length) setFarmName(s); } }); }
-
-		// plantOptions/chooser removed - planting is via drag-and-drop from seed tray
-
-
-		// chooser/overlay/cancel removed - not used with drag-and-drop seed tray
-
-		// Drag & drop: seed tray -> plot
-		const seedTray = document.getElementById('seed-tray');
-		if(seedTray){
-			seedTray.querySelectorAll('[data-plant]').forEach(el=>{
-				el.addEventListener('dragstart', function(e){
-					e.dataTransfer.setData('text/plain', el.dataset.plant);
-					e.dataTransfer.effectAllowed = 'copy';
-				});
-			});
-		}
-
-		if(plotEl){
-			plotEl.addEventListener('dragover', function(e){ e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; plotEl.classList.add('drag-over'); });
-			plotEl.addEventListener('dragleave', function(e){ plotEl.classList.remove('drag-over'); });
-			plotEl.addEventListener('drop', function(e){ e.preventDefault(); plotEl.classList.remove('drag-over'); const pid = e.dataTransfer.getData('text/plain'); if(pid && PLANTS[pid]){ plantCrop(pid); } });
-		}
-		if(resetBtn) resetBtn.addEventListener('click', resetGame);
-
-		renderMarket(); renderInventory(); renderPlot(); renderFarmName(); updateMoney(); startTicker();
-	}
-
-	if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setup); else setup();
-	window.addEventListener('beforeunload', ()=>{ saveNumber(MONEY_KEY, money); saveJSON(PLOT_KEY, plot); saveJSON(INV_KEY, inventory); });
-
-})();
+  })();
 

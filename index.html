@@ -12,6 +12,7 @@
 					<div class="title-row">
 						<h1 id="farm-name">Tiny Farm</h1>
 						<button id="edit-name-btn" class="edit-name" title="Rename farm">✎</button>
+						<button id="admin-btn" class="edit-name" title="Admin">Admin</button>
 					</div>
 					<div class="money-display" aria-live="polite">
 						<strong>Money:</strong> <span id="money">$0</span>
@@ -78,7 +79,7 @@
 						</div>
 
 						<div class="panel">
-							<h3>Market</h3>
+							<h3>Variant Info</h3>
 							<div id="market" class="market"></div>
 						</div>
 
@@ -87,6 +88,28 @@
 						</div>
 					</aside>
 				</section>
+
+				<!-- Admin modal (hidden until opened) -->
+				<div id="admin-modal" class="admin-modal" hidden>
+					<div class="admin-panel">
+						<h3>Admin</h3>
+						<!-- Passcode area shown first -->
+						<label for="admin-passcode">Enter passcode</label>
+						<input id="admin-passcode" type="password" inputmode="numeric" pattern="[0-9]*" />
+						<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
+							<button id="admin-unlock-btn" class="buy-plot">Unlock</button>
+							<button id="admin-close-btn" class="btn-link">Close</button>
+						</div>
+						<!-- Controls revealed after correct passcode -->
+						<div id="admin-controls" hidden style="margin-top:12px">
+							<label for="admin-amount">Amount</label>
+							<input id="admin-amount" type="number" min="0" value="100" />
+							<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end">
+								<button id="admin-give-btn" class="buy-plot">Give Money</button>
+							</div>
+						</div>
+					</div>
+				</div>
 
 
 
