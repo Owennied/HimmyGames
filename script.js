@@ -10,13 +10,19 @@
 
   // Plants: base price is the normal variant price; multipliers apply for better variants
   const PLANTS = {
-    carrot: { name: 'Carrot', grow: 10, price: 2, seedCost: 0,
+  carrot: { name: 'Carrot', grow: 3, price: 2, seedCost: 0,
       variants: { normal:{mul:1}, silver:{mul:2}, gold:{mul:4}, diamond:{mul:10} },
       variantOdds: { silver: 0.15, gold: 0.04, diamond: 0.01 }
     },
-    turnip: { name: 'Turnip', grow: 8, price: 5, seedCost: 2,
+  turnip: { name: 'Turnip', grow: 10, price: 5, seedCost: 2,
       variants: { normal:{mul:1}, silver:{mul:2}, gold:{mul:4}, diamond:{mul:10} },
       variantOdds: { silver: 0.12, gold: 0.03, diamond: 0.005 }
+    }
+    ,
+    tomato: { name: 'Tomato', grow: 20, price: 15, seedCost: 10,
+      variants: { normal:{mul:1}, silver:{mul:2}, gold:{mul:4}, diamond:{mul:10} },
+      // Assumption: moderate rarities; normal = remainder
+      variantOdds: { silver: 0.12, gold: 0.04, diamond: 0.01 }
     }
   };
 
@@ -116,22 +122,34 @@
     inventoryEl.innerHTML = '';
     const keys = Object.keys(inventory).filter(k => Array.isArray(inventory[k]) ? inventory[k].length > 0 : (inventory[k] && inventory[k] > 0));
     if(keys.length === 0){ inventoryEl.innerHTML = '<li class="muted">No crops</li>'; return; }
+    // Render one line per variant in the form: "Crop - Variant xAmount"
     keys.forEach(id => {
       const items = Array.isArray(inventory[id]) ? inventory[id] : [];
-      const qty = items.length;
       // count variants
       const counts = items.reduce((acc, v)=>{ acc[v] = (acc[v]||0)+1; return acc; }, {});
-      // only show variants that the player actually has (>0)
-      const parts = Object.keys(counts).filter(v => (counts[v]||0) > 0).map(v => `${v}: ${counts[v]}`);
-      const li = document.createElement('li');
-      const left = document.createElement('span');
-      left.textContent = `${PLANTS[id].name} x ${qty} — ${parts.join(', ')}`;
-      const right = document.createElement('div');
-      const btn1 = document.createElement('button'); btn1.textContent = 'Sell 1'; btn1.addEventListener('click', ()=>sellOne(id));
-      const btnAll = document.createElement('button'); btnAll.textContent = 'Sell All'; btnAll.style.marginLeft = '6px'; btnAll.addEventListener('click', ()=>sellAll(id));
-      right.appendChild(btn1); right.appendChild(btnAll); li.appendChild(left); li.appendChild(right); inventoryEl.appendChild(li);
+      Object.keys(counts).filter(v => (counts[v]||0) > 0).forEach(variant => {
+        const count = counts[variant];
+        const li = document.createElement('li');
+        const left = document.createElement('span');
+  // Capitalize variant label for nicer display
+  const variantLabel = variant.charAt(0).toUpperCase() + variant.slice(1);
+  // Render as: "Variant Crop xAmount" (e.g. "Gold Carrot x1")
+  left.textContent = `${variantLabel} ${PLANTS[id].name} x${count}`;
+        const right = document.createElement('div');
+        // Sell buttons target this specific variant
+        const sell1 = document.createElement('button'); sell1.textContent = 'Sell 1'; sell1.addEventListener('click', ()=>sellOneVariant(id, variant));
+        const sellAllVar = document.createElement('button'); sellAllVar.textContent = 'Sell All'; sellAllVar.style.marginLeft = '6px'; sellAllVar.addEventListener('click', ()=>sellAllVariant(id, variant));
+        right.appendChild(sell1); right.appendChild(sellAllVar);
+        li.appendChild(left); li.appendChild(right); inventoryEl.appendChild(li);
+      });
     });
   }
+
+  // Sell a single item of a specific variant
+  function sellOneVariant(id, variant){ const items = Array.isArray(inventory[id]) ? inventory[id] : []; if(!items || items.length===0) return; const plant = PLANTS[id]; const idx = items.indexOf(variant); if(idx === -1) return; items.splice(idx,1); inventory[id] = items; const mul = (plant.variants && plant.variants[variant] && plant.variants[variant].mul) ? plant.variants[variant].mul : 1; const gained = Math.round((plant.price || 1) * mul); money += gained; saveJSON(INV_KEY, inventory); saveNumber(MONEY_KEY, money); updateMoney(); renderInventory(); }
+
+  // Sell all items of a specific variant
+  function sellAllVariant(id, variant){ const items = Array.isArray(inventory[id]) ? inventory[id] : []; if(!items || items.length===0) return; const plant = PLANTS[id]; let total = 0; const remaining = []; items.forEach(v=>{ if(v === variant){ const mul = (plant.variants && plant.variants[v] && plant.variants[v].mul) ? plant.variants[v].mul : 1; total += (plant.price || 1) * mul; } else { remaining.push(v); } }); const gained = Math.round(total); money += gained; inventory[id] = remaining; saveJSON(INV_KEY, inventory); saveNumber(MONEY_KEY, money); updateMoney(); renderInventory(); }
 
   function renderMarket(){
     if(!marketEl) return;
@@ -162,7 +180,13 @@
         const li = document.createElement('li');
         const pct = Math.round(chance * 10000) / 100; // percentage with 2 decimals
         const value = Math.round((p.price || 1) * mul);
-        li.textContent = `${v} — Chance: ${pct}% — Multiplier: x${mul} — Sell Value: ${fmt(value)}`;
+        // badge
+        const badge = document.createElement('span'); badge.className = `variant-badge ${v}`;
+        // main text
+        const txt = document.createElement('span'); txt.className = 'variant-text';
+  txt.textContent = `${v} — ${pct}% Chance — x${mul} Value`;
+        li.appendChild(badge);
+        li.appendChild(txt);
         ul.appendChild(li);
       });
       container.appendChild(ul);
