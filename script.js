@@ -10,6 +10,29 @@
     turnip: { name: 'Turnip', grow: 8, price: 5, seedCost: 2 }
   };
 
+  // Small SVG thumbnails for seeds/plots. state can be 'idle'|'growing'|'harvest'
+  function getPlantSVG(id, state){
+    if(!id || id === 'empty'){
+      return '<svg width="28" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g><ellipse cx="12" cy="13" rx="3" ry="2" fill="#b88b6f"/><path d="M11 10c0 .6.4 1 1 1s1-.4 1-1-.4-1-1-1-1 .4-1 1z" fill="#8b5a3c"/></g></svg>';
+    }
+    if(id === 'carrot'){
+      // simple carrot icon
+      return '<svg width="36" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+        + '<g>'
+        + '<path d="M6 2c0 0 2 1 3 3l-1 1 2 2 1-1 3 3-8 8-6-6 6-10z" fill="#f59e0b"/>'
+        + '<path d="M11 3c0 0 1 1 2 2 1 1 2 2 2 2l1-1c0 0-1-2-3-3-2-1-4-0-4-0z" fill="#16a34a"/>'
+        + '</g></svg>';
+    }
+    if(id === 'turnip'){
+      return '<svg width="36" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+        + '<g>'
+        + '<circle cx="12" cy="13" r="5" fill="#9f7aea"/>'
+        + '<path d="M9 7c0 0 1-2 3-2s3 2 3 2 0 1-3 1-3-1-3-1z" fill="#16a34a"/>'
+        + '</g></svg>';
+    }
+    return '';
+  }
+
   // Farmers
   // Assumption: each farmer costs $150 to hire. Farmers can be assigned to a single plot and will
   // automatically harvest that plot when the crop is ready.
@@ -47,6 +70,8 @@
   let farmers = loadJSON(FARMERS_KEY, []);
   // helper for temporary assign mode: stores farmer id when user clicks "Assign" and then clicks a plot
   let assigningFarmerId = null;
+  // track when the user is actively dragging a seed so we don't re-create plot DOM under the cursor
+  let isDragging = false;
 
   // Plot cost formula:
   // - First purchased plot (when player has only the starter plot) costs $75
@@ -101,8 +126,8 @@
     wrapper.setAttribute('role','button');
     wrapper.dataset.index = String(idx);
 
-    const inner = document.createElement('div'); inner.className = 'plot-inner';
-    const seedIcon = document.createElement('div'); seedIcon.className = 'seed-icon'; seedIcon.textContent = '🌱';
+  const inner = document.createElement('div'); inner.className = 'plot-inner';
+  const seedIcon = document.createElement('div'); seedIcon.className = 'seed-icon'; seedIcon.innerHTML = getPlantSVG('empty','idle');
     const progress = document.createElement('div'); progress.className = 'progress';
     const bar = document.createElement('div'); bar.className = 'bar'; bar.style.width = '0%'; progress.appendChild(bar);
     inner.appendChild(seedIcon); inner.appendChild(progress);
@@ -118,14 +143,14 @@
     // Update UI based on data
     function refresh(){
       const p = plots[idx];
-      if(!p){ wrapper.classList.remove('planted'); stateEl.textContent = 'Empty'; wrapper.setAttribute('aria-label','Empty plot. Drag a seed here to plant'); bar.style.width='0%'; seedIcon.textContent='🌱';
+      if(!p){ wrapper.classList.remove('planted'); stateEl.textContent = 'Empty'; wrapper.setAttribute('aria-label','Empty plot. Drag a seed here to plant'); bar.style.width='0%'; seedIcon.innerHTML = getPlantSVG('empty','idle');
       } else {
         const plant = PLANTS[p.plantId];
         const elapsed = Math.max(0, Math.floor((Date.now() - p.plantedAt)/1000));
         const pct = Math.min(100, Math.round((elapsed / plant.grow) * 100));
         bar.style.width = pct + '%';
-        if(elapsed >= plant.grow){ stateEl.textContent = `${plant.name} — Ready`; seedIcon.textContent='🌾'; wrapper.setAttribute('aria-label', `${plant.name} ready to harvest. Click to harvest`); }
-        else { stateEl.textContent = `${plant.name} — Growing (${elapsed}s / ${plant.grow}s)`; seedIcon.textContent='🌿'; wrapper.setAttribute('aria-label', `${plant.name} growing`); }
+        if(elapsed >= plant.grow){ stateEl.textContent = `${plant.name} — Ready`; seedIcon.innerHTML = getPlantSVG(p.plantId,'harvest'); wrapper.setAttribute('aria-label', `${plant.name} ready to harvest. Click to harvest`); }
+        else { stateEl.textContent = `${plant.name} — Growing (${elapsed}s / ${plant.grow}s)`; seedIcon.innerHTML = getPlantSVG(p.plantId,'growing'); wrapper.setAttribute('aria-label', `${plant.name} growing`); }
         wrapper.classList.add('planted');
       }
       // show farmer badge if a farmer is assigned to this plot (farmers state checked at render)
@@ -174,7 +199,40 @@
     return {el: wrapper, labelEl: label, refresh};
   }
 
-  function renderPlots(){ if(!plotsContainer) return; plotsContainer.innerHTML = ''; const elements = []; plots.forEach((p, idx)=>{ const {el,labelEl,refresh} = createPlotElement(idx,p); const container = document.createElement('div'); container.style.textAlign='center'; container.appendChild(el); container.appendChild(labelEl); plotsContainer.appendChild(container); elements.push({el,refresh}); }); // refresh immediately
+  function renderPlots(){
+    if(!plotsContainer) return;
+    // If the user is currently dragging a seed, avoid replacing the plot DOM elements
+    // (replacing interrupts the native drag and causes the "not-allowed" cursor to flash).
+    if(isDragging){
+      // refresh existing plot elements in-place
+      const existingPlots = plotsContainer.querySelectorAll('.plot');
+      existingPlots.forEach(pel=>{ try{ if(typeof pel._refresh === 'function') pel._refresh(); }catch(e){} });
+      // ensure labels are in reasonable state (best-effort)
+      const containers = plotsContainer.children;
+      for(let i=0;i<plots.length && i<containers.length;i++){
+        try{
+          const label = containers[i].querySelector('.plot-label');
+          if(label){
+            const stateText = plots[i] ? (PLANTS[plots[i].plantId] && PLANTS[plots[i].plantId].name ? PLANTS[plots[i].plantId].name : 'Growing') : 'Empty';
+            label.innerHTML = `Plot ${i+1}<br><small class="plot-state">${stateText}</small>`;
+          }
+        }catch(e){}
+      }
+      return;
+    }
+
+    plotsContainer.innerHTML = '';
+    const elements = [];
+    plots.forEach((p, idx)=>{
+      const {el,labelEl,refresh} = createPlotElement(idx,p);
+      const container = document.createElement('div');
+      container.style.textAlign='center';
+      container.appendChild(el);
+      container.appendChild(labelEl);
+      plotsContainer.appendChild(container);
+      elements.push({el,refresh});
+    });
+    // refresh immediately
     elements.forEach(x=>x.refresh());
   }
 
@@ -267,8 +325,11 @@
     // keyboard ESC no-op
     window.addEventListener('beforeunload', saveAll);
 
-    // Ensure drops are allowed and provide a document-level drop fallback — some browsers may not dispatch drop on the nested plot element
-    document.addEventListener('dragover', function(e){ e.preventDefault(); });
+  // Ensure drops are allowed and provide a document-level drop fallback — some browsers may not dispatch drop on the nested plot element
+  document.addEventListener('dragover', function(e){ e.preventDefault(); });
+  // Track drag state so we don't re-create plot DOM while the user is dragging (prevents flicker/forbidden cursor)
+  document.addEventListener('dragstart', function(){ isDragging = true; }, true);
+  document.addEventListener('dragend', function(){ isDragging = false; }, true);
     document.addEventListener('drop', function(e){
       // if the drop was already handled by a plot element, do nothing
       try{
@@ -277,6 +338,8 @@
         const el = document.elementFromPoint(e.clientX, e.clientY);
         const plotEl = el && el.closest ? el.closest('.plot') : null;
         if(plotEl){ const idx = parseInt(plotEl.dataset.index,10); if(!isNaN(idx) && !plots[idx]){ plantCrop(pid, idx); } }
+        // drop ends dragging
+        isDragging = false;
       }catch(err){ /* ignore */ }
     });
   }
@@ -294,6 +357,20 @@
 	const PLANTS = {
 		carrot: { name: 'Carrot', grow: 10, price: 5 }
 	};
+
+  function getPlantSVGLocal(id, state){
+    if(!id || id === 'empty'){
+      return '<svg width="28" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g><ellipse cx="12" cy="13" rx="3" ry="2" fill="#b88b6f"/></g></svg>';
+    }
+    if(id === 'carrot'){
+      return '<svg width="36" height="28" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">'
+        + '<g>'
+        + '<path d="M6 2c0 0 2 1 3 3l-1 1 2 2 1-1 3 3-8 8-6-6 6-10z" fill="#f59e0b"/>'
+        + '<path d="M11 3c0 0 1 1 2 2 1 1 2 2 2 2l1-1c0 0-1-2-3-3-2-1-4-0-4-0z" fill="#16a34a"/>'
+        + '</g></svg>';
+    }
+    return '';
+  }
 
 	function $(id){ return document.getElementById(id); }
 
@@ -336,8 +413,8 @@
 			plotEl.classList.remove('planted');
 			plotStateEl.textContent = 'Empty';
 			plotEl.setAttribute('aria-label', 'Empty plot. Click to plant');
-			if(progressBar) progressBar.style.width = '0%';
-			plotEl.querySelector('.seed-icon').textContent = '🌱';
+      if(progressBar) progressBar.style.width = '0%';
+      plotEl.querySelector('.seed-icon').innerHTML = getPlantSVGLocal('empty','idle');
 		} else {
 			const plant = PLANTS[plot.plantId];
 			const now = Date.now();
@@ -345,12 +422,12 @@
 			const pct = Math.min(100, Math.round((elapsed / plant.grow) * 100));
 			if(progressBar) progressBar.style.width = pct + '%';
 			if(elapsed >= plant.grow){
-				plotStateEl.textContent = `${plant.name} — Ready to harvest`;
-				plotEl.querySelector('.seed-icon').textContent = '🌾';
+        plotStateEl.textContent = `${plant.name} — Ready to harvest`;
+        plotEl.querySelector('.seed-icon').innerHTML = getPlantSVGLocal(plot.plantId,'harvest');
 				plotEl.setAttribute('aria-label', `${plant.name} ready to harvest. Click to harvest`);
 			} else {
-				plotStateEl.textContent = `${plant.name} — Growing (${elapsed}s / ${plant.grow}s)`;
-				plotEl.querySelector('.seed-icon').textContent = '🌿';
+        plotStateEl.textContent = `${plant.name} — Growing (${elapsed}s / ${plant.grow}s)`;
+        plotEl.querySelector('.seed-icon').innerHTML = getPlantSVGLocal(plot.plantId,'growing');
 				plotEl.setAttribute('aria-label', `${plant.name} growing. ${elapsed} of ${plant.grow} seconds`);
 			}
 			plotEl.classList.add('planted');
