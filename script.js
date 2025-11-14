@@ -10,16 +10,17 @@
 
   // Plants: base price is the normal variant price; multipliers apply for better variants
   const PLANTS = {
-  carrot: { name: 'Carrot', grow: 3, price: 2, seedCost: 0,
+  // Prices reduced by ~30% for economy balance (rounded)
+  carrot: { name: 'Carrot', grow: 3, price: 1, seedCost: 0,
       variants: { normal:{mul:1}, silver:{mul:2}, gold:{mul:4}, diamond:{mul:10} },
       variantOdds: { silver: 0.15, gold: 0.04, diamond: 0.01 }
     },
-  turnip: { name: 'Turnip', grow: 10, price: 5, seedCost: 2,
+  turnip: { name: 'Turnip', grow: 10, price: 3, seedCost: 2,
       variants: { normal:{mul:1}, silver:{mul:2}, gold:{mul:4}, diamond:{mul:10} },
       variantOdds: { silver: 0.12, gold: 0.03, diamond: 0.005 }
     }
     ,
-    tomato: { name: 'Tomato', grow: 20, price: 15, seedCost: 10,
+    tomato: { name: 'Tomato', grow: 20, price: 8, seedCost: 5,
       variants: { normal:{mul:1}, silver:{mul:2}, gold:{mul:4}, diamond:{mul:10} },
       // Assumption: moderate rarities; normal = remainder
       variantOdds: { silver: 0.12, gold: 0.04, diamond: 0.01 }
@@ -136,9 +137,13 @@
   // Render as: "Variant Crop xAmount" (e.g. "Gold Carrot x1")
   left.textContent = `${variantLabel} ${PLANTS[id].name} x${count}`;
         const right = document.createElement('div');
-        // Sell buttons target this specific variant
-        const sell1 = document.createElement('button'); sell1.textContent = 'Sell 1'; sell1.addEventListener('click', ()=>sellOneVariant(id, variant));
-        const sellAllVar = document.createElement('button'); sellAllVar.textContent = 'Sell All'; sellAllVar.style.marginLeft = '6px'; sellAllVar.addEventListener('click', ()=>sellAllVariant(id, variant));
+  // Sell buttons target this specific variant and show computed amounts
+  const plant = PLANTS[id];
+  const mul = (plant.variants && plant.variants[variant] && plant.variants[variant].mul) ? plant.variants[variant].mul : 1;
+  const perItem = Math.round((plant.price || 1) * mul);
+  const totalForVariant = perItem * count;
+  const sell1 = document.createElement('button'); sell1.textContent = `Sell 1 (${fmt(perItem)})`; sell1.addEventListener('click', ()=>sellOneVariant(id, variant));
+  const sellAllVar = document.createElement('button'); sellAllVar.textContent = `Sell All (${fmt(totalForVariant)})`; sellAllVar.style.marginLeft = '6px'; sellAllVar.addEventListener('click', ()=>sellAllVariant(id, variant));
         right.appendChild(sell1); right.appendChild(sellAllVar);
         li.appendChild(left); li.appendChild(right); inventoryEl.appendChild(li);
       });
